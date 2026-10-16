@@ -14,7 +14,6 @@ Sub-Store 的 `ClashMeta` / `Mihomo` 产出**只有 `proxies:` 一段**，不含
 pnpm install
 pnpm dev         # 本地 http://localhost:8787
 pnpm deploy      # 部署到 Cloudflare
-pnpm test        # 单元测试
 ```
 
 上游地址一律由请求参数带入，**不需要预先配置**。
@@ -211,5 +210,4 @@ https://<worker>.workers.dev/?url=http://<sub-store>/download/<订阅名>/URI
 src/index.js      Worker 入口：读取参数、抓取上游、返回 YAML
 src/convert.js    纯函数：URI 解析、配置拼装、YAML 序列化
 src/utils.js      纯函数：URI 拆分与解码、短 token、纯文本响应（被上面两个文件引用）
-test/             单元测试（node:test）：URI 解析与拼装、Worker 路由与 KV 行为
 ```
