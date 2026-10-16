@@ -162,11 +162,6 @@ async function handleRoot(env, url) {
 
 export default {
     async fetch(request, env) {
-        if (request.method !== 'GET' && request.method !== 'HEAD') {
-            return text('Method Not Allowed', 405);
-        }
-
-
 
         if (!env.ACCESS_KEY) {
             return text('需要配置 ACCESS_KEY', 500);
