@@ -9,95 +9,22 @@
  * 与 backend/build-clash-config.js 的区别：不依赖 Sub-Store 后端、不读本地
  * geosite.dat、不跑内核校验、不做自动探测。策略组与规则是硬编码的常量。
  *
+ * 从 utils.js 引入 URI 拆分与解码等基础工具
+ *
  * 支持的协议：vless / trojan / ss / vmess
  */
 
 import YAML from 'yaml';
 
-/* ================================================================== */
-/* 基础工具                                                            */
-/* ================================================================== */
-
-function safeDecode(value) {
-    try {
-        return decodeURIComponent(value);
-    } catch (error) {
-        return value;
-    }
-}
-
-function decodeBase64(input) {
-    let text = String(input)
-        .trim()
-        .replace(/\s+/g, '')
-        .replace(/-/g, '+')
-        .replace(/_/g, '/');
-    text += '='.repeat((4 - (text.length % 4)) % 4);
-    const binary = atob(text);
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    return new TextDecoder().decode(bytes);
-}
-
-function isTrue(value) {
-    return value === true || value === '1' || value === 'true';
-}
-
-// 手工解析查询串：不用 URLSearchParams，避免它把密码里的 `+` 转成空格
-function parseQuery(query) {
-    const params = {};
-    if (!query) return params;
-    for (const pair of String(query).split('&')) {
-        if (!pair) continue;
-        const index = pair.indexOf('=');
-        const key = index < 0 ? pair : pair.slice(0, index);
-        const value = index < 0 ? '' : pair.slice(index + 1);
-        params[safeDecode(key)] = safeDecode(value);
-    }
-    return params;
-}
-
-// 拆出主体、查询参数与 # 后的节点名
-function splitUri(uri) {
-    const hashIndex = uri.indexOf('#');
-    const name = hashIndex < 0 ? '' : safeDecode(uri.slice(hashIndex + 1));
-    const noFragment = hashIndex < 0 ? uri : uri.slice(0, hashIndex);
-    const queryIndex = noFragment.indexOf('?');
-    return {
-        body:
-            queryIndex < 0 ? noFragment : noFragment.slice(0, queryIndex),
-        params: parseQuery(
-            queryIndex < 0 ? '' : noFragment.slice(queryIndex + 1),
-        ),
-        name,
-    };
-}
-
-function stripScheme(body, scheme) {
-    return body.slice(`${scheme}://`.length);
-}
-
-// 取最后一个 @ 作为分隔符，密码里的 @ 应已被百分号编码
-function parseUserHost(body) {
-    const at = body.lastIndexOf('@');
-    if (at < 0) throw new Error('缺少 @ 分隔符');
-    return [body.slice(0, at), body.slice(at + 1)];
-}
-
-// 兼容 IPv6 字面量 [::1]:443
-function splitHostPort(value) {
-    const text = String(value).trim();
-    if (text.startsWith('[')) {
-        const end = text.indexOf(']');
-        if (end < 0) throw new Error('IPv6 地址缺少 ]');
-        return [
-            text.slice(1, end),
-            Number(text.slice(end + 2)),
-        ];
-    }
-    const index = text.lastIndexOf(':');
-    if (index < 0) throw new Error('缺少端口');
-    return [text.slice(0, index), Number(text.slice(index + 1))];
-}
+import {
+    decodeBase64,
+    isTrue,
+    parseUserHost,
+    safeDecode,
+    splitHostPort,
+    splitUri,
+    stripScheme,
+} from './utils.js';
 
 /* ================================================================== */
 /* 传输层参数                                                          */

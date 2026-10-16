@@ -205,5 +205,6 @@ https://<worker>.workers.dev/?url=http://<sub-store>/download/<订阅名>/URI
 ```
 src/index.js      Worker 入口：读取参数、抓取上游、返回 YAML
 src/convert.js    纯函数：URI 解析、配置拼装、YAML 序列化
+src/utils.js      纯函数：URI 拆分与解码、短 token、纯文本响应（被上面两个文件引用）
 test/             单元测试（node:test）
 ```

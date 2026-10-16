@@ -14,21 +14,13 @@
  */
 
 import { buildConfig, parseSubscription, toYaml } from './convert.js';
+import { makeToken, text, upstreamHash } from './utils.js';
 
 const HELP = `用法:
   GET /?url=<上游订阅地址>&key=<ACCESS_KEY>   存进 KV，返回一个短地址
   GET /s?token=<短 token>                     用存下来的上游出配置`;
 
 const USER_AGENT = 'clash-verge/v1.7.7';
-
-// 短 token 用 base64url，12 个字符，碰撞概率可以忽略
-function makeToken() {
-    const bytes = crypto.getRandomValues(new Uint8Array(9));
-    return btoa(String.fromCharCode(...bytes))
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
-}
 
 // SUB_TTL 是"天"：不填用 90，0 表示不过期；负数或 9O 这类笔误也按 90 算，
 // 免得静默变成"永不过期"
@@ -38,18 +30,6 @@ function tokenTtl(env) {
     if (!Number.isFinite(days) || days < 0) return 90 * 86400;
     // KV 的 expirationTtl 最小 60 秒
     return days === 0 ? null : Math.max(60, Math.floor(days * 86400));
-}
-
-// 同一个上游地址要复用同一个 token，否则客户端每次刷新都会写一条新记录
-async function upstreamHash(target) {
-    const digest = await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(target),
-    );
-    return [...new Uint8Array(digest)]
-        .map((byte) => byte.toString(16).padStart(2, '0'))
-        .join('')
-        .slice(0, 16);
 }
 
 // 抓取上游并解析。失败时返回 { error } —— 一个可以直接回给客户端的响应
@@ -133,16 +113,6 @@ function configResponse({ proxies, skipped }) {
             'x-skipped-summary': encodeURIComponent(
                 skipped.slice(0, 5).join(' | '),
             ),
-        },
-    });
-}
-
-function text(body, status) {
-    return new Response(body, {
-        status: status || 200,
-        headers: {
-            'content-type': 'text/plain; charset=utf-8',
-            'cache-control': 'no-store',
         },
     });
 }
