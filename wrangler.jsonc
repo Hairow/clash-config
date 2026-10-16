@@ -1,0 +1,28 @@
+{
+    // Cloudflare Worker 配置。不要再放一份 wrangler.toml，两者同时存在会冲突。
+    "name": "clash-config",
+    "main": "src/index.js",
+    "compatibility_date": "2026-09-01",
+
+    // Workers Logs：在 Cloudflare 控制台的 Worker → Logs 里查历史日志（保留 3 天）。
+    // 只看实时输出用 `pnpm exec wrangler tail`，不需要这段配置。
+    "observability": {
+        "enabled": true,
+        // 每次请求的调用日志（含 console 输出），默认即开启，这里写出来是为了明确
+        "logs": { "invocation_logs": true }
+    },
+
+    // 可选环境变量。上游地址一律由请求的 ?url= 带入，这里不需要配。
+    // 短地址有效期是 SUB_TTL：不填默认 90 天，填 "0" 表示不过期。
+    // 改这里的值要重新 `pnpm deploy` 才对线上生效。
+    "vars": {},
+
+    // ACCESS_KEY 是密钥，不要写在这里，用 `wrangler secret put ACCESS_KEY` 写入。
+    // 本地 `wrangler dev` 不读线上 secret，另需一份 .dev.vars（已被 .gitignore 忽略）。
+
+    // 短地址功能需要 KV：`wrangler kv namespace create SUB_KV`，
+    // 把输出的 id 填进来；换到自己的另一个 namespace 时替换 id 后重新 deploy。
+    "kv_namespaces": [
+        { "binding": "SUB_KV", "id": "51c4728d626f4cffa5407c7d99933a31" }
+    ]
+}

@@ -52,7 +52,7 @@ curl "https://<worker>.workers.dev/?url=<源订阅地址>&key=<ACCESS_KEY>"
 
 ```bash
 pnpm dlx wrangler kv namespace create SUB_KV
-# 输出里的 id 填进 wrangler.toml 的 [[kv_namespaces]]
+# 输出里的 id 填进 wrangler.jsonc 的 kv_namespaces
 ```
 
 ```toml
@@ -107,7 +107,7 @@ curl "https://<worker>.workers.dev/?drop=DgD_UxLNWgdr&key=abc"
 - **只对之后新建的短地址生效。** 已经存进 KV 的过期时间在写入时就定死了，改环境变量不会追溯修改它们。想让老的也长期有效，只能删掉后重新请求一次拿个新地址。
 - **改 `[vars]` 要重新 `pnpm deploy`；改 `wrangler secret` 不用。** `ACCESS_KEY` 是 secret，改完立即生效，已发出的地址随之失效。
 
-`SUB_TTL` 解析得比较宽容：不填或填空串按 90 天；`0` 表示不过期；填了负数或 `9O` 这类笔误也按 90 天处理（同时 `wrangler tail` 里会打一条告警），不会静默变成"永不过期"；小于 1 分钟的值会被抬到 KV 要求的 60 秒下限。
+`SUB_TTL` 解析得比较宽容：不填或填空串按 90 天；`0` 表示不过期；填了负数或 `9O` 这类笔误也按 90 天处理，不会静默变成"永不过期"；小于 1 分钟的值会被抬到 KV 要求的 60 秒下限。
 
 ## 环境变量
 
@@ -129,6 +129,28 @@ ACCESS_KEY="<你的密钥>"
 ```
 
 文件名必须是带点的 `.dev.vars`，`dev.vars` 不会被读取。启动时看到 `Using secrets defined in .dev.vars` 即表示生效。改完 `.dev.vars` 要重启 `pnpm dev`；同理，改 `[vars]` 需要重新 `pnpm deploy` 才对线上生效。
+
+## 日志
+
+日志走平台侧，**代码里不写 `console.*`**。`wrangler.jsonc` 已开启 Workers Logs：
+
+```bash
+pnpm exec wrangler tail        # 实时看
+```
+
+历史日志在 Cloudflare 控制台的 Worker → Logs（Free 保留 3 天，Paid 7 天）；本地 `pnpm dev` 的请求日志直接打在终端上。
+
+排查问题时看平台自带的调用日志（形如 `GET / 403 Forbidden (50ms)`，给出状态码与耗时），具体原因都写在响应体里，不需要看自定义日志：
+
+| 现象 | 响应里会带的信息 |
+| --- | --- |
+| 上游抓取失败 | `502` + 失败原因，证书类问题会附提示 |
+| 上游非 2xx | `502` + 上游状态码与响应前 500 字符 |
+| 没解析到节点 | `422` + 上游内容前 500 字符 |
+| 短地址失效 | `404` + 重新生成的用法 |
+| 密钥不对 | `403 forbidden` |
+
+想确认某个订阅到底哪些节点被跳过，用 `?debug=1`（不写 KV，直接返回跳过清单）。
 
 ## 转换能力
 

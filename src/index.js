@@ -58,9 +58,6 @@ function tokenTtl(env) {
 
     const days = Number(raw);
     if (!Number.isFinite(days) || days < 0) {
-        console.warn(
-            `SUB_TTL 值无效（${raw}），按默认 ${DEFAULT_TTL_DAYS} 天处理`,
-        );
         return DEFAULT_TTL_DAYS * 86400;
     }
     if (days === 0) return null;
