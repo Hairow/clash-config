@@ -19,7 +19,7 @@ pnpm test        # 单元测试
 
 上游地址一律由请求参数带入，**不需要预先配置**。
 
-**把源订阅地址放进 `url` 请求一次，它会返回一个短地址**（默认就保存，不需要 `save=1`）：
+**把源订阅地址放进 `url` 请求一次，它会返回一个短地址**：
 
 ```bash
 curl "https://<worker>.workers.dev/?url=<源订阅地址>&key=<ACCESS_KEY>"
@@ -30,19 +30,12 @@ curl "https://<worker>.workers.dev/?url=<源订阅地址>&key=<ACCESS_KEY>"
 
 - 同一个源地址**复用同一个短地址**，客户端反复刷新不会往 KV 里写新记录。
 - 短地址里不含源订阅地址，客户端上不会暴露它；换机场时重新请求一次即可。
-- 想直接拿配置（不保存）加 `raw=1`；想先看解析结果加 `debug=1`（两者都不会写 KV）。
 - 源地址自带 `?` `&` 时必须 URL 编码，否则会被当成 Worker 自己的参数。
 
 | 参数 | 说明 |
 | --- | --- |
 | `url` | 源订阅地址，**必需**（或命中短地址时由 KV 提供） |
-| `raw=1` | 不保存，直接返回配置 |
-| `ua` | 请求上游时使用的 User-Agent，默认 `clash-verge/v1.7.7` |
-| `debug=1` | 不输出配置，改为列出解析失败的节点及原因 |
 | `key` | 设置了 `ACCESS_KEY` 时必须携带 |
-| `save=1` | 同默认行为，保留作显式写法 |
-| `list=1` | 列出 KV 里已存的短地址 |
-| `drop=<token>` | 删除某个短地址 |
 
 > 没绑定 `SUB_KV` 或没设 `ACCESS_KEY` 时无法保存，带 `url` 的请求会**退回**为直接返回配置。
 
@@ -69,29 +62,24 @@ curl "https://<worker>.workers.dev/?key=abc&url=https%3A%2F%2Fexample.com%2Fsub%
 # https://<worker>.workers.dev/s/DgD_UxLNWgdr
 
 # 这个地址直接填进客户端即可；默认 90 天后失效，SUB_TTL=0 可设为不过期
-curl "https://<worker>.workers.dev/?list=1&key=abc"
-curl "https://<worker>.workers.dev/?drop=DgD_UxLNWgdr&key=abc"
 ```
 
 几点说明：
 
-- token 是 12 位随机 base64url，**它本身就是凭证**，命中 KV 后不再要求 `ACCESS_KEY`；`list` / `drop` / `gen` 这些管理操作则始终需要密钥。
+- token 是 12 位随机 base64url，**它本身就是凭证**，命中 KV 后不再要求 `ACCESS_KEY`。
 - **同一个上游地址复用同一个 token**（按 SHA-256 前 16 位建反查索引）。即使有人把 `/?url=...` 误填进客户端让它反复拉取，也不会一直往 KV 里堆记录。
 - 短地址的上游以 KV 里存的为准，`?url=` 覆盖不了它——否则它就成了可任意改写的开放代理。
-- 没设 `ACCESS_KEY` 时无法保存（返回 `400`，且带 `url` 的请求退回"直接出配置"）：否则任何人都能往你的 KV 里写。
-- 没绑定 `SUB_KV` 时显式 `save=1` 返回 `501`，带 `url` 的自动保存则静默退回"直接出配置"。
+- 没设 `ACCESS_KEY` 或没绑定 `SUB_KV` 时无法保存，带 `url` 的请求**静默退回**"直接出配置"，既不写 KV 也不报错。
 
 ## 地址什么时候会失效
 
 | 地址 | 失效条件 |
 | --- | --- |
 | `/?url=...&key=...` | 换掉 `ACCESS_KEY`、删掉 Worker，或自定义域名/`workers.dev` 子域变了（源订阅地址一直由请求带入，不受本 Worker 配置影响） |
-| `/s/<短 token>` | **默认 90 天后**（`SUB_TTL` 设定，从写入时刻起算，客户端刷新不会续期）；或被 `drop` 删掉 |
+| `/s/<短 token>` | **默认 90 天后**（`SUB_TTL` 设定，从写入时刻起算，客户端刷新不会续期） |
 | 任意地址 | 上游订阅链接自己过期（机场的锅），表现为 `502` 或 `422` |
 
 保存时**不会校验上游是否可用**（不抓取），所以一个失效的地址也能存进去，问题要到客户端拉配置时才暴露。
-
-同理，`drop` 之后 `list=1` 可能还会显示那条记录最多约 60 秒（KV 的 list 结果有边缘缓存），但该地址从删除那一刻起就已经 404、不可用了。
 
 短地址过期后访问会返回 `404`，并提示重新生成：
 
@@ -104,7 +92,7 @@ curl "https://<worker>.workers.dev/?drop=DgD_UxLNWgdr&key=abc"
 
 改成 `SUB_TTL = "0"` 后需要注意两点：
 
-- **只对之后新建的短地址生效。** 已经存进 KV 的过期时间在写入时就定死了，改环境变量不会追溯修改它们。想让老的也长期有效，只能删掉后重新请求一次拿个新地址。
+- **只对之后新建的短地址生效。** 已经存进 KV 的过期时间在写入时就定死了，改环境变量不会追溯修改它们，老地址只能等它过期后重新请求一次换个新的。
 - **改 `[vars]` 要重新 `pnpm deploy`；改 `wrangler secret` 不用。** `ACCESS_KEY` 是 secret，改完立即生效，已发出的地址随之失效。
 
 `SUB_TTL` 解析得比较宽容：不填或填空串按 90 天；`0` 表示不过期；填了负数或 `9O` 这类笔误也按 90 天处理，不会静默变成"永不过期"；小于 1 分钟的值会被抬到 KV 要求的 60 秒下限。
@@ -113,7 +101,6 @@ curl "https://<worker>.workers.dev/?drop=DgD_UxLNWgdr&key=abc"
 
 | 变量 | 说明 |
 | --- | --- |
-
 | `SUB_TTL` | 短地址有效期（天）。不填用默认 90，填 `"0"` 表示不过期 |
 | `ACCESS_KEY` | 访问密钥。**建议设置**，否则任何人拿到 URL 都能把这个 Worker 当抓取代理用 |
 | `SUB_KV` | KV namespace 绑定，短地址功能需要 |
@@ -150,7 +137,7 @@ pnpm exec wrangler tail        # 实时看
 | 短地址失效 | `404` + 重新生成的用法 |
 | 密钥不对 | `403 forbidden` |
 
-想确认某个订阅到底哪些节点被跳过，用 `?debug=1`（不写 KV，直接返回跳过清单）。
+想确认某个订阅到底哪些节点被跳过，看响应头：`x-proxy-count` 是成功解析数，`x-skipped-count` 是跳过数，`x-skipped-summary` 是前 5 条跳过原因（URL 编码）。
 
 ## 转换能力
 
@@ -160,7 +147,7 @@ pnpm exec wrangler tail        # 实时看
 
 **订阅格式**：整段 base64、或明文 URI 列表
 
-解析失败的节点会被跳过而不是中断整批，用 `?debug=1` 查看原因。暂不支持 `hysteria2` / `tuic` / `ss` 的 `plugin` 参数。
+解析失败的节点会被跳过而不是中断整批，原因见响应头的 `x-skipped-summary`。暂不支持 `hysteria2` / `tuic` / `ss` 的 `plugin` 参数。
 
 ## 产出内容
 

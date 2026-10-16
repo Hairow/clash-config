@@ -385,7 +385,7 @@ const HEALTH_CHECK = {
     interval: 300,
 };
 
-export function buildGroups(nodeNames) {
+function buildGroups(nodeNames) {
     return [
         {
             name: NODE_SELECT,
@@ -423,7 +423,7 @@ export function buildGroups(nodeNames) {
     ];
 }
 
-export function buildRules() {
+function buildRules() {
     return [
         `GEOSITE,category-ads-all,${BLOCK}`,
 

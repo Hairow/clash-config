@@ -1,11 +1,8 @@
 /*
  * Cloudflare Worker：把订阅地址转成 Clash Verge (mihomo) 可用的完整配置
  *
- * 上游地址一律由请求参数 url 带入，不需要预先配置：
- *   https://<worker>.workers.dev/?url=<上游订阅地址>&key=<ACCESS_KEY>
- *        → 存进 KV，返回一个短地址（同一个上游复用同一个地址）
- *   https://<worker>.workers.dev/s/<短 token>
- *        → 用存下来的上游出配置
+ *   /?url=<上游订阅地址>&key=<ACCESS_KEY>  存进 KV，返回一个短地址
+ *   /s/<短 token>                          用存下来的上游出配置
  *
  * 环境变量：
  *   ACCESS_KEY  设置后必须带 ?key= 才能访问（避免变成公开的抓取代理）
@@ -15,17 +12,11 @@
 
 import { buildConfig, parseSubscription, toYaml } from './convert.js';
 
-const HELP = `Cloudflare Worker: 订阅 → Clash Verge (mihomo) 配置
-
-用法:
+const HELP = `用法:
   GET /?url=<上游订阅地址>&key=<ACCESS_KEY>   存进 KV，返回一个短地址
-  GET /s/<短 token>                           用存下来的上游出配置
+  GET /s/<短 token>                           用存下来的上游出配置`;
 
-说明:
-  - 上游返回 base64 或明文均可，支持 vless / trojan / ss / vmess
-  - 输出为完整配置，含 14 个策略组与 32 条分流规则
-  - 短地址填进客户端即可，源订阅地址不会暴露在客户端里
-`;
+const USER_AGENT = 'clash-verge/v1.7.7';
 
 // 短 token 用 base64url，12 个字符，碰撞概率可以忽略
 function makeToken() {
@@ -36,28 +27,22 @@ function makeToken() {
         .replace(/=+$/, '');
 }
 
-const DEFAULT_TTL_DAYS = 90;
-
-// SUB_TTL 是"天"：0 表示不过期；没填用 90 天；负数或乱填也按 90 天算，
-// 免得把 9O / -1 这种笔误静默当成"永不过期"
+// SUB_TTL 是"天"：不填用 90，0 表示不过期；负数或 9O 这类笔误也按 90 算，
+// 免得静默变成"永不过期"
 function tokenTtl(env) {
     const raw = env.SUB_TTL;
-    if (raw === undefined || raw === '') return DEFAULT_TTL_DAYS * 86400;
-
-    const days = Number(raw);
-    if (!Number.isFinite(days) || days < 0) {
-        return DEFAULT_TTL_DAYS * 86400;
-    }
-    if (days === 0) return null;
-
+    const days = raw === undefined || raw === '' ? 90 : Number(raw);
+    if (!Number.isFinite(days) || days < 0) return 90 * 86400;
     // KV 的 expirationTtl 最小 60 秒
-    return Math.max(60, Math.floor(days * 86400));
+    return days === 0 ? null : Math.max(60, Math.floor(days * 86400));
 }
 
 // 同一个上游地址要复用同一个 token，否则客户端每次刷新都会写一条新记录
 async function upstreamHash(target) {
-    const bytes = new TextEncoder().encode(target);
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const digest = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(target),
+    );
     return [...new Uint8Array(digest)]
         .map((byte) => byte.toString(16).padStart(2, '0'))
         .join('')
@@ -65,13 +50,10 @@ async function upstreamHash(target) {
 }
 
 // 把上游地址存进 KV，换一个短地址出来
-async function saveUpstream(env, origin, params) {
-    const target = params.get('url');
-    if (!target) return text('缺少 url 参数。用法：/?url=<上游订阅地址>', 400);
-
+async function saveUpstream(env, origin, target) {
     const hash = await upstreamHash(target);
     const existing = await env.SUB_KV.get(`u:${hash}`);
-    if (existing && (await env.SUB_KV.get(`sub:${existing}`))) {
+    if (existing) {
         return text(
             `${origin}/s/${existing}\n\n` +
                 '这个上游地址之前存过，沿用同一个短地址，没有重复写入。',
@@ -80,14 +62,10 @@ async function saveUpstream(env, origin, params) {
 
     const ttl = tokenTtl(env);
     const token = makeToken();
-    const options = {
-        ...(ttl ? { expirationTtl: ttl } : {}),
-        metadata: { url: target, createdAt: new Date().toISOString() },
-    };
-    const entry = JSON.stringify({ url: target, hash });
-    await env.SUB_KV.put(`sub:${token}`, entry, options);
-    // 反查索引，用来去重
+    const options = ttl ? { expirationTtl: ttl } : {};
+    // 先写反查索引：它要比 sub: 先过期，否则会留下指向已失效短地址的死链
     await env.SUB_KV.put(`u:${hash}`, token, options);
+    await env.SUB_KV.put(`sub:${token}`, target, options);
 
     return text(
         `${origin}/s/${token}\n\n` +
@@ -102,11 +80,6 @@ function pathToken(pathname) {
     return segments.length === 2 && segments[0] === 's' ? segments[1] : '';
 }
 
-const YAML_HEADERS = {
-    'content-type': 'text/yaml; charset=utf-8',
-    'cache-control': 'no-store',
-};
-
 function text(body, status) {
     return new Response(body, {
         status: status || 200,
@@ -119,22 +92,17 @@ function text(body, status) {
 
 export default {
     async fetch(request, env) {
-        const url = new URL(request.url);
-
         if (request.method !== 'GET' && request.method !== 'HEAD') {
             return text('Method Not Allowed', 405);
         }
 
+        const url = new URL(request.url);
         const params = url.searchParams;
 
-        // 短 token 只可能出现在 /s/<token> 里，命中它就不再要求 ACCESS_KEY
+        // 短 token 只可能出现在 /s/<token> 里；它本身就是凭证，命中后不再要求 ACCESS_KEY
         const token = pathToken(url.pathname);
         const stored =
-            env.SUB_KV && token
-                ? await env.SUB_KV.get(`sub:${token}`, 'json')
-                : null;
-
-        // /s/xxx 查不到就是短地址过期或写错了，明确报 404
+            env.SUB_KV && token ? await env.SUB_KV.get(`sub:${token}`) : null;
         if (token && !stored) {
             return text(
                 `短地址 ${token} 不存在或已过期。\n` +
@@ -143,33 +111,28 @@ export default {
             );
         }
 
-        // 只有命中 KV 的短地址才自带凭证，其余请求都要带密钥
-        const authorized =
-            !env.ACCESS_KEY || params.get('key') === env.ACCESS_KEY;
-        if (!stored && !authorized) {
+        // 其余请求都要带密钥
+        if (!stored && env.ACCESS_KEY && params.get('key') !== env.ACCESS_KEY) {
             return text('forbidden', 403);
         }
 
-        // 带 url 的请求就是"存下来换个短地址"；没绑 KV 或没设密钥时无法安全保存，
-        // 静默降级为直接出配置，不写 KV
-        const wantSave = !stored && Boolean(params.get('url'));
-        if (wantSave && env.SUB_KV && env.ACCESS_KEY) {
-            return await saveUpstream(env, url.origin, params);
-        }
-
         // 短地址命中的话以 KV 里存的为准，避免它被当成开放代理随意改上游
-        const source = stored?.url || params.get('url');
+        const source = stored || params.get('url');
         if (!source) {
             return text(HELP, 400);
         }
 
-        const userAgent = 'clash-verge/v1.7.7';
+        // 带 url 的请求就是"存下来换个短地址"。没绑 KV 或没设密钥时无法安全保存，
+        // 静默降级为直接出配置，不写 KV
+        if (!stored && env.SUB_KV && env.ACCESS_KEY) {
+            return await saveUpstream(env, url.origin, source);
+        }
 
         let upstream;
         try {
             upstream = await fetch(source, {
                 headers: {
-                    'User-Agent': userAgent,
+                    'User-Agent': USER_AGENT,
                     Accept: '*/*',
                 },
                 // 尽力跳过 TLS 校验；注意 Cloudflare 可能忽略该项，自签证书仍需证书有效
@@ -189,10 +152,7 @@ export default {
 
         const raw = await upstream.text();
         if (!upstream.ok) {
-            return text(
-                `上游返回 ${upstream.status}\n${raw.slice(0, 500)}`,
-                502,
-            );
+            return text(`上游返回 ${upstream.status}\n${raw.slice(0, 500)}`, 502);
         }
 
         const { proxies, skipped } = parseSubscription(raw);
@@ -203,11 +163,12 @@ export default {
             );
         }
 
-        const yaml = toYaml(buildConfig(proxies));
-        return new Response(yaml, {
+        return new Response(toYaml(buildConfig(proxies)), {
             headers: {
-                ...YAML_HEADERS,
+                'content-type': 'text/yaml; charset=utf-8',
+                'cache-control': 'no-store',
                 'x-proxy-count': String(proxies.length),
+                // 跳过的节点只放摘要，避免响应头过长
                 'x-skipped-count': String(skipped.length),
                 'x-skipped-summary': encodeURIComponent(
                     skipped.slice(0, 5).join(' | '),
