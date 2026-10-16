@@ -49,7 +49,7 @@ async function loadUpstream(source) {
         const message = String(error.message || error);
         const hint = /internal error|tls|ssl|certificate|handshake/i.test(message)
             ? '\n\n提示：上游证书为自签或已过期时 Cloudflare 无法跳过校验。' +
-              '请改用证书有效的地址，或让 Sub-Store 作为上游（它的 #insecure 能绕过）。'
+            '请改用证书有效的地址，或让 Sub-Store 作为上游（它的 #insecure 能绕过）。'
             : '';
         return { error: text(`拉取上游失败: ${message}${hint}`, 502) };
     }
@@ -81,8 +81,8 @@ async function saveUpstream(env, origin, target, nodeCount) {
     if (existing) {
         return text(
             `${origin}/s?token=${existing}\n\n` +
-                `上游探测可用（${nodeCount} 个节点），` +
-                '这个地址之前存过，沿用同一个短地址，没有重复写入。',
+            `上游探测可用（${nodeCount} 个节点），` +
+            '这个地址之前存过，沿用同一个短地址，没有重复写入。',
         );
     }
 
@@ -95,9 +95,9 @@ async function saveUpstream(env, origin, target, nodeCount) {
 
     return text(
         `${origin}/s?token=${token}\n\n` +
-            `上游探测可用（${nodeCount} 个节点）。\n` +
-            `已存入 KV${ttl ? `，${ttl / 86400} 天后失效` : '，不会自动失效'}。\n` +
-            '把它填进 Clash Verge 的订阅框即可。',
+        `上游探测可用（${nodeCount} 个节点）。\n` +
+        `已存入 KV${ttl ? `，${ttl / 86400} 天后失效` : '，不会自动失效'}。\n` +
+        '把它填进 Clash Verge 的订阅框即可。',
     );
 }
 
@@ -128,7 +128,7 @@ async function serveShort(env, url) {
     if (!source) {
         return text(
             `短地址 ${token} 不存在或已过期。\n` +
-                '用 /?key=<ACCESS_KEY>&url=<订阅地址> 请求一次就会生成新的。',
+            '用 /?key=<ACCESS_KEY>&url=<订阅地址> 请求一次就会生成新的。',
             404,
         );
     }
@@ -140,7 +140,9 @@ async function serveShort(env, url) {
 // 分支二 /?url=...：带 url 就是"存下来换个短地址"
 async function handleRoot(env, url) {
     const params = url.searchParams;
-    if (env.ACCESS_KEY && params.get('key') !== env.ACCESS_KEY) {
+    if (!env.ACCESS_KEY
+        || !params.get('key')
+        || (params.get('key') !== env.ACCESS_KEY)) {
         return text('forbidden', 403);
     }
 
@@ -155,8 +157,8 @@ async function handleRoot(env, url) {
         return loaded.error;
     }
 
-    // 没绑 KV 或没设密钥时无法安全保存，静默降级为直接出配置，不写 KV
-    if (env.SUB_KV && env.ACCESS_KEY) {
+    // 没绑 KV 静默降级为直接出配置，不写 KV
+    if (env.SUB_KV) {
         return await saveUpstream(
             env,
             url.origin,
