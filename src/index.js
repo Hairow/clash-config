@@ -1,10 +1,11 @@
 /*
  * Cloudflare Worker：把订阅地址转成 Clash Verge (mihomo) 可用的完整配置
  *
- *   /?url=<上游订阅地址>&key=<ACCESS_KEY>  存进 KV，返回一个短地址
- *   /s/<短 token>                          用存下来的上游出配置
+ * 按路径分成两个入口，其余路径一律 404：
+ *   /s?token=<短 token>        → serveShort()：用 KV 里存的上游出配置
+ *   /?url=<上游订阅地址>&key=  → handleRoot()：存进 KV，返回一个短地址
  *
- * 两条路径都会先抓一次上游探测可用性，失败直接返回 502 / 422，不写 KV
+ * 两条分支都会先抓一次上游探测可用性，失败直接返回 502 / 422，不写 KV
  *
  * 环境变量：
  *   ACCESS_KEY  设置后必须带 ?key= 才能访问（避免变成公开的抓取代理）
@@ -16,7 +17,7 @@ import { buildConfig, parseSubscription, toYaml } from './convert.js';
 
 const HELP = `用法:
   GET /?url=<上游订阅地址>&key=<ACCESS_KEY>   存进 KV，返回一个短地址
-  GET /s/<短 token>                           用存下来的上游出配置`;
+  GET /s?token=<短 token>                     用存下来的上游出配置`;
 
 const USER_AGENT = 'clash-verge/v1.7.7';
 
@@ -99,7 +100,7 @@ async function saveUpstream(env, origin, target, nodeCount) {
     const existing = await env.SUB_KV.get(`u:${hash}`);
     if (existing) {
         return text(
-            `${origin}/s/${existing}\n\n` +
+            `${origin}/s?token=${existing}\n\n` +
                 `上游探测可用（${nodeCount} 个节点），` +
                 '这个地址之前存过，沿用同一个短地址，没有重复写入。',
         );
@@ -113,17 +114,27 @@ async function saveUpstream(env, origin, target, nodeCount) {
     await env.SUB_KV.put(`sub:${token}`, target, options);
 
     return text(
-        `${origin}/s/${token}\n\n` +
+        `${origin}/s?token=${token}\n\n` +
             `上游探测可用（${nodeCount} 个节点）。\n` +
             `已存入 KV${ttl ? `，${ttl / 86400} 天后失效` : '，不会自动失效'}。\n` +
             '把它填进 Clash Verge 的订阅框即可。',
     );
 }
 
-// 只有 /s/<token> 这种写法才带路径参数，其余路径一律当普通请求
-function pathToken(pathname) {
-    const segments = pathname.split('/').filter(Boolean);
-    return segments.length === 2 && segments[0] === 's' ? segments[1] : '';
+// 把探测好的节点套上策略组与规则，返回 YAML
+function configResponse({ proxies, skipped }) {
+    return new Response(toYaml(buildConfig(proxies)), {
+        headers: {
+            'content-type': 'text/yaml; charset=utf-8',
+            'cache-control': 'no-store',
+            'x-proxy-count': String(proxies.length),
+            // 跳过的节点只放摘要，避免响应头过长
+            'x-skipped-count': String(skipped.length),
+            'x-skipped-summary': encodeURIComponent(
+                skipped.slice(0, 5).join(' | '),
+            ),
+        },
+    });
 }
 
 function text(body, status) {
@@ -136,6 +147,57 @@ function text(body, status) {
     });
 }
 
+// 分支一 /s?token=<短 token>：token 本身就是凭证，不用再带 key
+async function serveShort(env, url) {
+    const token = url.searchParams.get('token');
+    if (!token) {
+        return text('缺少 token 参数。用法：/s?token=<短 token>', 400);
+    }
+
+    const source = env.SUB_KV ? await env.SUB_KV.get(`sub:${token}`) : null;
+    if (!source) {
+        return text(
+            `短地址 ${token} 不存在或已过期。\n` +
+                '用 /?key=<ACCESS_KEY>&url=<订阅地址> 请求一次就会生成新的。',
+            404,
+        );
+    }
+
+    const loaded = await loadUpstream(source);
+    return loaded.error || configResponse(loaded);
+}
+
+// 分支二 /?url=...：带 url 就是"存下来换个短地址"
+async function handleRoot(env, url) {
+    const params = url.searchParams;
+    if (env.ACCESS_KEY && params.get('key') !== env.ACCESS_KEY) {
+        return text('forbidden', 403);
+    }
+
+    const source = params.get('url');
+    if (!source) {
+        return text(HELP, 400);
+    }
+
+    // 存之前先探测一次上游：地址失效时直接报错，不会把死链写进 KV
+    const loaded = await loadUpstream(source);
+    if (loaded.error) {
+        return loaded.error;
+    }
+
+    // 没绑 KV 或没设密钥时无法安全保存，静默降级为直接出配置，不写 KV
+    if (env.SUB_KV && env.ACCESS_KEY) {
+        return await saveUpstream(
+            env,
+            url.origin,
+            source,
+            loaded.proxies.length,
+        );
+    }
+
+    return configResponse(loaded);
+}
+
 export default {
     async fetch(request, env) {
         if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -143,61 +205,11 @@ export default {
         }
 
         const url = new URL(request.url);
-        const params = url.searchParams;
 
-        // 短 token 只可能出现在 /s/<token> 里；它本身就是凭证，命中后不再要求 ACCESS_KEY
-        const token = pathToken(url.pathname);
-        const stored =
-            env.SUB_KV && token ? await env.SUB_KV.get(`sub:${token}`) : null;
-        if (token && !stored) {
-            return text(
-                `短地址 ${token} 不存在或已过期。\n` +
-                    '用 /?key=<ACCESS_KEY>&url=<订阅地址> 请求一次就会生成新的。',
-                404,
-            );
-        }
+        // 只处理这两个路径，其余一律 404：/ 存短地址，/s?token= 出配置
+        if (url.pathname === '/') return await handleRoot(env, url);
+        if (url.pathname === '/s') return await serveShort(env, url);
 
-        // 其余请求都要带密钥
-        if (!stored && env.ACCESS_KEY && params.get('key') !== env.ACCESS_KEY) {
-            return text('forbidden', 403);
-        }
-
-        // 短地址命中的话以 KV 里存的为准，避免它被当成开放代理随意改上游
-        const source = stored || params.get('url');
-        if (!source) {
-            return text(HELP, 400);
-        }
-
-        // 不管是要存还是要出配置，都先探测一次上游：地址失效时直接报错，
-        // 不会把死链写进 KV，也不会返回一份空配置
-        const loaded = await loadUpstream(source);
-        if (loaded.error) {
-            return loaded.error;
-        }
-
-        // 带 url 的请求就是"存下来换个短地址"。没绑 KV 或没设密钥时无法安全保存，
-        // 静默降级为直接出配置，不写 KV
-        if (!stored && env.SUB_KV && env.ACCESS_KEY) {
-            return await saveUpstream(
-                env,
-                url.origin,
-                source,
-                loaded.proxies.length,
-            );
-        }
-
-        const { proxies, skipped } = loaded;
-        return new Response(toYaml(buildConfig(proxies)), {
-            headers: {
-                'content-type': 'text/yaml; charset=utf-8',
-                'cache-control': 'no-store',
-                'x-proxy-count': String(proxies.length),
-                // 跳过的节点只放摘要，避免响应头过长
-                'x-skipped-count': String(skipped.length),
-                'x-skipped-summary': encodeURIComponent(
-                    skipped.slice(0, 5).join(' | '),
-                ),
-            },
-        });
+        return text('Not Found', 404);
     },
 };

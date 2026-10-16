@@ -23,7 +23,7 @@ pnpm test        # 单元测试
 
 ```bash
 curl "https://<worker>.workers.dev/?url=<源订阅地址>&key=<ACCESS_KEY>"
-# https://<worker>.workers.dev/s/qmTDGqA6SeM8
+# https://<worker>.workers.dev/s?token=qmTDGqA6SeM8
 ```
 
 把返回的这行填进客户端的订阅框即可。要点：
@@ -59,7 +59,7 @@ id = "<上一步输出的 id>"
 ```bash
 # 存一个上游，换回短地址（带 url 就是保存）
 curl "https://<worker>.workers.dev/?key=abc&url=https%3A%2F%2Fexample.com%2Fsub%3Ftoken%3Dxyz"
-# https://<worker>.workers.dev/s/DgD_UxLNWgdr
+# https://<worker>.workers.dev/s?token=DgD_UxLNWgdr
 
 # 这个地址直接填进客户端即可；默认 90 天后失效，SUB_TTL=0 可设为不过期
 ```
@@ -77,7 +77,7 @@ curl "https://<worker>.workers.dev/?key=abc&url=https%3A%2F%2Fexample.com%2Fsub%
 | 地址 | 失效条件 |
 | --- | --- |
 | `/?url=...&key=...` | 换掉 `ACCESS_KEY`、删掉 Worker，或自定义域名/`workers.dev` 子域变了（源订阅地址一直由请求带入，不受本 Worker 配置影响） |
-| `/s/<短 token>` | **默认 90 天后**（`SUB_TTL` 设定，从写入时刻起算，客户端刷新不会续期） |
+| `/s?token=<短 token>` | **默认 90 天后**（`SUB_TTL` 设定，从写入时刻起算，客户端刷新不会续期） |
 | 任意地址 | 上游订阅链接自己过期（机场的锅），表现为 `502` 或 `422` |
 
 探测只发生在请求的那一刻：存下来的短地址之后能不能用，还得看上游订阅自己有没有过期。上游失效时短地址仍会命中 KV，只是在抓取上游时报 `502` / `422`——重新用 `?url=...` 请求一次换个上游即可。
