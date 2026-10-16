@@ -35,9 +35,9 @@ curl "https://<worker>.workers.dev/?url=<源订阅地址>&key=<ACCESS_KEY>"
 | 参数 | 说明 |
 | --- | --- |
 | `url` | 源订阅地址，**必需**（或命中短地址时由 KV 提供） |
-| `key` | 设置了 `ACCESS_KEY` 时必须携带 |
+| `key` | 访问密钥，**必需**（与 `ACCESS_KEY` 一致） |
 
-> 没绑定 `SUB_KV` 或没设 `ACCESS_KEY` 时无法保存，带 `url` 的请求会**退回**为直接返回配置。
+> `SUB_KV` 与 `ACCESS_KEY` 都是**必填**：缺任何一个，所有请求都会返回 `500` 并说明缺了什么，不会降级成"直接出配置"。
 
 ## 短地址（KV）
 
@@ -70,7 +70,7 @@ curl "https://<worker>.workers.dev/?key=abc&url=https%3A%2F%2Fexample.com%2Fsub%
 - **同一个上游地址复用同一个 token**（按 SHA-256 前 16 位建反查索引）。即使有人把 `/?url=...` 误填进客户端让它反复拉取，也不会一直往 KV 里堆记录。
 - **存之前会先抓一次上游探测可用性。** 抓取失败、上游非 2xx、或解析不出任何节点，都会直接返回 `502` / `422` 而不写 KV；成功时响应体里会带上解析到的节点数。
 - 短地址的上游以 KV 里存的为准，`?url=` 覆盖不了它——否则它就成了可任意改写的开放代理。
-- 没设 `ACCESS_KEY` 或没绑定 `SUB_KV` 时无法保存，带 `url` 的请求**静默退回**"直接出配置"，既不写 KV 也不报错。
+- `SUB_KV` 与 `ACCESS_KEY` 缺一不可：缺了会在入口处直接返回 `500`，不会写 KV、也不会退回"直接出配置"。
 
 ## 地址什么时候会失效
 
@@ -102,9 +102,9 @@ curl "https://<worker>.workers.dev/?key=abc&url=https%3A%2F%2Fexample.com%2Fsub%
 
 | 变量 | 说明 |
 | --- | --- |
-| `SUB_TTL` | 短地址有效期（天）。不填用默认 90，填 `"0"` 表示不过期 |
-| `ACCESS_KEY` | 访问密钥。**建议设置**，否则任何人拿到 URL 都能把这个 Worker 当抓取代理用 |
-| `SUB_KV` | KV namespace 绑定，短地址功能需要 |
+| `SUB_KV` | KV namespace 绑定。**必填** |
+| `ACCESS_KEY` | 访问密钥。**必填**，否则任何人拿到 URL 都能把这个 Worker 当抓取代理用 |
+| `SUB_TTL` | 短地址有效期（天）。可选，不填用默认 90，填 `"0"` 表示不过期 |
 
 ```bash
 wrangler secret put ACCESS_KEY
@@ -137,6 +137,7 @@ pnpm exec wrangler tail        # 实时看
 | 没解析到节点 | `422` + 上游内容前 500 字符 |
 | 短地址失效 | `404` + 重新生成的用法 |
 | 密钥不对 | `403 forbidden` |
+| 缺 `SUB_KV` / `ACCESS_KEY` | `500` + 缺的是哪一个，以及配置命令 |
 
 想确认某个订阅到底哪些节点被跳过，看响应头：`x-proxy-count` 是成功解析数，`x-skipped-count` 是跳过数，`x-skipped-summary` 是前 5 条跳过原因（URL 编码）。
 

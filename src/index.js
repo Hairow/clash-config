@@ -7,10 +7,12 @@
  *
  * 两条分支都会先抓一次上游探测可用性，失败直接返回 502 / 422，不写 KV
  *
- * 环境变量：
- *   ACCESS_KEY  设置后必须带 ?key= 才能访问（避免变成公开的抓取代理）
- *   SUB_TTL     短地址有效期（天），默认 90，填 0 表示不过期
- *   绑定 SUB_KV 后才启用短地址功能
+ * 必需配置（缺任何一个都返回 500，不做降级）：
+ *   SUB_KV       KV namespace 绑定
+ *   ACCESS_KEY   访问密钥，请求必须带 ?key=
+ *
+ * 可选配置：
+ *   SUB_TTL      短地址有效期（天），默认 90，填 0 表示不过期
  */
 
 import { buildConfig, parseSubscription, toYaml } from './convert.js';
@@ -124,7 +126,7 @@ async function serveShort(env, url) {
         return text('缺少 token 参数。用法：/s?token=<短 token>', 400);
     }
 
-    const source = env.SUB_KV ? await env.SUB_KV.get(`sub:${token}`) : null;
+    const source = await env.SUB_KV.get(`sub:${token}`);
     if (!source) {
         return text(
             `短地址 ${token} 不存在或已过期。\n` +
@@ -140,9 +142,7 @@ async function serveShort(env, url) {
 // 分支二 /?url=...：带 url 就是"存下来换个短地址"
 async function handleRoot(env, url) {
     const params = url.searchParams;
-    if (!env.ACCESS_KEY
-        || !params.get('key')
-        || (params.get('key') !== env.ACCESS_KEY)) {
+    if (params.get('key') !== env.ACCESS_KEY) {
         return text('forbidden', 403);
     }
 
@@ -157,23 +157,22 @@ async function handleRoot(env, url) {
         return loaded.error;
     }
 
-    // 没绑 KV 静默降级为直接出配置，不写 KV
-    if (env.SUB_KV) {
-        return await saveUpstream(
-            env,
-            url.origin,
-            source,
-            loaded.proxies.length,
-        );
-    }
-
-    return configResponse(loaded);
+    return await saveUpstream(env, url.origin, source, loaded.proxies.length);
 }
 
 export default {
     async fetch(request, env) {
         if (request.method !== 'GET' && request.method !== 'HEAD') {
             return text('Method Not Allowed', 405);
+        }
+
+
+
+        if (!env.ACCESS_KEY) {
+            return text('需要配置 ACCESS_KEY', 500);
+        }
+        if (!env.SUB_KV) {
+            return text('需要配置 SUB_KV', 500);
         }
 
         const url = new URL(request.url);
