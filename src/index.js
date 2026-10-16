@@ -4,6 +4,8 @@
  *   /?url=<上游订阅地址>&key=<ACCESS_KEY>  存进 KV，返回一个短地址
  *   /s/<短 token>                          用存下来的上游出配置
  *
+ * 两条路径都会先抓一次上游探测可用性，失败直接返回 502 / 422，不写 KV
+ *
  * 环境变量：
  *   ACCESS_KEY  设置后必须带 ?key= 才能访问（避免变成公开的抓取代理）
  *   SUB_TTL     短地址有效期（天），默认 90，填 0 表示不过期
@@ -49,14 +51,57 @@ async function upstreamHash(target) {
         .slice(0, 16);
 }
 
-// 把上游地址存进 KV，换一个短地址出来
-async function saveUpstream(env, origin, target) {
+// 抓取上游并解析。失败时返回 { error } —— 一个可以直接回给客户端的响应
+async function loadUpstream(source) {
+    let response;
+    try {
+        response = await fetch(source, {
+            headers: {
+                'User-Agent': USER_AGENT,
+                Accept: '*/*',
+            },
+            // 尽力跳过 TLS 校验；注意 Cloudflare 可能忽略该项，自签证书仍需证书有效
+            cf: { insecureSkipVerify: true },
+            redirect: 'follow',
+        });
+    } catch (error) {
+        const message = String(error.message || error);
+        const hint = /internal error|tls|ssl|certificate|handshake/i.test(message)
+            ? '\n\n提示：上游证书为自签或已过期时 Cloudflare 无法跳过校验。' +
+              '请改用证书有效的地址，或让 Sub-Store 作为上游（它的 #insecure 能绕过）。'
+            : '';
+        return { error: text(`拉取上游失败: ${message}${hint}`, 502) };
+    }
+
+    const raw = await response.text();
+    if (!response.ok) {
+        return {
+            error: text(`上游返回 ${response.status}\n${raw.slice(0, 500)}`, 502),
+        };
+    }
+
+    const { proxies, skipped } = parseSubscription(raw);
+    if (!proxies.length) {
+        return {
+            error: text(
+                `没有解析到节点。上游内容前 500 字符：\n${raw.slice(0, 500)}`,
+                422,
+            ),
+        };
+    }
+
+    return { proxies, skipped };
+}
+
+// 把上游地址存进 KV，换一个短地址出来。调用前已探测过上游，nodeCount 是解析到的节点数
+async function saveUpstream(env, origin, target, nodeCount) {
     const hash = await upstreamHash(target);
     const existing = await env.SUB_KV.get(`u:${hash}`);
     if (existing) {
         return text(
             `${origin}/s/${existing}\n\n` +
-                '这个上游地址之前存过，沿用同一个短地址，没有重复写入。',
+                `上游探测可用（${nodeCount} 个节点），` +
+                '这个地址之前存过，沿用同一个短地址，没有重复写入。',
         );
     }
 
@@ -69,6 +114,7 @@ async function saveUpstream(env, origin, target) {
 
     return text(
         `${origin}/s/${token}\n\n` +
+            `上游探测可用（${nodeCount} 个节点）。\n` +
             `已存入 KV${ttl ? `，${ttl / 86400} 天后失效` : '，不会自动失效'}。\n` +
             '把它填进 Clash Verge 的订阅框即可。',
     );
@@ -122,47 +168,25 @@ export default {
             return text(HELP, 400);
         }
 
+        // 不管是要存还是要出配置，都先探测一次上游：地址失效时直接报错，
+        // 不会把死链写进 KV，也不会返回一份空配置
+        const loaded = await loadUpstream(source);
+        if (loaded.error) {
+            return loaded.error;
+        }
+
         // 带 url 的请求就是"存下来换个短地址"。没绑 KV 或没设密钥时无法安全保存，
         // 静默降级为直接出配置，不写 KV
         if (!stored && env.SUB_KV && env.ACCESS_KEY) {
-            return await saveUpstream(env, url.origin, source);
-        }
-
-        let upstream;
-        try {
-            upstream = await fetch(source, {
-                headers: {
-                    'User-Agent': USER_AGENT,
-                    Accept: '*/*',
-                },
-                // 尽力跳过 TLS 校验；注意 Cloudflare 可能忽略该项，自签证书仍需证书有效
-                cf: { insecureSkipVerify: true },
-                redirect: 'follow',
-            });
-        } catch (error) {
-            const message = String(error.message || error);
-            const hint = /internal error|tls|ssl|certificate|handshake/i.test(
-                message,
-            )
-                ? '\n\n提示：上游证书为自签或已过期时 Cloudflare 无法跳过校验。' +
-                  '请改用证书有效的地址，或让 Sub-Store 作为上游（它的 #insecure 能绕过）。'
-                : '';
-            return text(`拉取上游失败: ${message}${hint}`, 502);
-        }
-
-        const raw = await upstream.text();
-        if (!upstream.ok) {
-            return text(`上游返回 ${upstream.status}\n${raw.slice(0, 500)}`, 502);
-        }
-
-        const { proxies, skipped } = parseSubscription(raw);
-        if (!proxies.length) {
-            return text(
-                `没有解析到节点。上游内容前 500 字符：\n${raw.slice(0, 500)}`,
-                422,
+            return await saveUpstream(
+                env,
+                url.origin,
+                source,
+                loaded.proxies.length,
             );
         }
 
+        const { proxies, skipped } = loaded;
         return new Response(toYaml(buildConfig(proxies)), {
             headers: {
                 'content-type': 'text/yaml; charset=utf-8',
