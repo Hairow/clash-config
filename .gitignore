@@ -1,0 +1,15 @@
+node_modules/
+.wrangler/
+.dist/
+dist/
+
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+
+*.log
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/

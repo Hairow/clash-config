@@ -1,0 +1,19 @@
+{
+  "name": "clash-config-worker",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.11.2",
+  "type": "module",
+  "description": "把订阅地址转成 Clash Verge (mihomo) 完整配置的 Cloudflare Worker",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.151.0"
+  }
+}
