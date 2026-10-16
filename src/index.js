@@ -6,9 +6,6 @@
  *        → 存进 KV，返回一个短地址（同一个上游复用同一个地址）
  *   https://<worker>.workers.dev/s/<短 token>
  *        → 用存下来的上游出配置
- *   https://<worker>.workers.dev/?url=<上游订阅地址>&key=xxx&raw=1
- *        → 不保存，直接返回完整配置
- *   https://<worker>.workers.dev/?list=1&key=xxx / ?drop=<短 token>&key=xxx
  *
  * 环境变量：
  *   ACCESS_KEY  设置后必须带 ?key= 才能访问（避免变成公开的抓取代理）
@@ -23,15 +20,6 @@ const HELP = `Cloudflare Worker: 订阅 → Clash Verge (mihomo) 配置
 用法:
   GET /?url=<上游订阅地址>&key=<ACCESS_KEY>   存进 KV，返回一个短地址
   GET /s/<短 token>                           用存下来的上游出配置
-
-管理:
-  GET /?list=1&key=<ACCESS_KEY>               列出已存的短地址
-  GET /?drop=<短 token>&key=<ACCESS_KEY>      删除
-
-可选参数:
-  raw=1     不保存，直接返回配置
-  ua        请求上游时使用的 User-Agent，默认 clash-verge/v1.7.7
-  debug=1   不输出配置，改为列出哪些节点被跳过及原因
 
 说明:
   - 上游返回 base64 或明文均可，支持 vless / trojan / ss / vmess
@@ -96,11 +84,7 @@ async function saveUpstream(env, origin, params) {
         ...(ttl ? { expirationTtl: ttl } : {}),
         metadata: { url: target, createdAt: new Date().toISOString() },
     };
-    const entry = JSON.stringify({
-        url: target,
-        ua: params.get('ua') || null,
-        hash,
-    });
+    const entry = JSON.stringify({ url: target, hash });
     await env.SUB_KV.put(`sub:${token}`, entry, options);
     // 反查索引，用来去重
     await env.SUB_KV.put(`u:${hash}`, token, options);
@@ -108,8 +92,7 @@ async function saveUpstream(env, origin, params) {
     return text(
         `${origin}/s/${token}\n\n` +
             `已存入 KV${ttl ? `，${ttl / 86400} 天后失效` : '，不会自动失效'}。\n` +
-            '把它填进 Clash Verge 的订阅框即可；' +
-            `删除用 /?drop=${token}&key=<ACCESS_KEY>。`,
+            '把它填进 Clash Verge 的订阅框即可。',
     );
 }
 
@@ -161,78 +144,17 @@ export default {
         }
 
         // 只有命中 KV 的短地址才自带凭证，其余请求都要带密钥
-        const isManage =
-            params.get('save') === '1' ||
-            params.get('list') === '1' ||
-            params.has('drop');
         const authorized =
             !env.ACCESS_KEY || params.get('key') === env.ACCESS_KEY;
-        if ((isManage || !stored) && !authorized) {
+        if (!stored && !authorized) {
             return text('forbidden', 403);
         }
 
-        // 带 url 的请求默认就是"存下来换个短地址"，不需要写 save=1。
-        // 想直接拿配置用 raw=1；想先看解析结果用 debug=1。
-        const explicitSave = params.get('save') === '1';
-        const autoSave =
-            !stored &&
-            Boolean(params.get('url')) &&
-            params.get('raw') !== '1' &&
-            params.get('debug') !== '1';
-
-        if (explicitSave && !env.SUB_KV) {
-            return text(
-                '没有绑定 SUB_KV，短地址功能不可用。见 README 的「短地址」一节。',
-                501,
-            );
-        }
-        if (explicitSave && !env.ACCESS_KEY) {
-            // 没密钥的话任何人拿到地址都能往 KV 里写，所以这里强制要求
-            return text(
-                '保存上游地址前请先设置 ACCESS_KEY：\n' +
-                    '  wrangler secret put ACCESS_KEY\n' +
-                    '否则任何人都能往 KV 里写数据。',
-                400,
-            );
-        }
-
-        // 没绑 KV 或没设密钥时无法安全保存，自动保存静默降级为直接出配置
-        const canAutoSave =
-            autoSave && Boolean(env.SUB_KV) && Boolean(env.ACCESS_KEY);
-        if (explicitSave || canAutoSave) {
+        // 带 url 的请求就是"存下来换个短地址"；没绑 KV 或没设密钥时无法安全保存，
+        // 静默降级为直接出配置，不写 KV
+        const wantSave = !stored && Boolean(params.get('url'));
+        if (wantSave && env.SUB_KV && env.ACCESS_KEY) {
             return await saveUpstream(env, url.origin, params);
-        }
-
-        if (params.get('list') === '1') {
-            if (!env.SUB_KV) return text('没有绑定 SUB_KV。', 501);
-            const lines = [];
-            let cursor;
-            do {
-                const page = await env.SUB_KV.list({ prefix: 'sub:', cursor });
-                for (const item of page.keys) {
-                    lines.push(
-                        `${url.origin}/s/${item.name.slice(4)} -> ` +
-                            `${item.metadata?.url || '(无)'}`,
-                    );
-                }
-                cursor = page.list_complete ? undefined : page.cursor;
-            } while (cursor);
-            return text(lines.length ? lines.join('\n') : '（KV 里还没有短地址）');
-        }
-
-        if (params.has('drop')) {
-            if (!env.SUB_KV) return text('没有绑定 SUB_KV。', 501);
-            const token = params.get('drop');
-            const entry = await env.SUB_KV.get(`sub:${token}`, 'json');
-            if (!entry) {
-                return text(`KV 里没有 ${token}`, 404);
-            }
-            await env.SUB_KV.delete(`sub:${token}`);
-            // 反查索引要一起删，否则同一个上游再次存进来会指向已删除的 token
-            if (entry.hash) {
-                await env.SUB_KV.delete(`u:${entry.hash}`);
-            }
-            return text(`已删除 ${url.origin}/s/${token}`);
         }
 
         // 短地址命中的话以 KV 里存的为准，避免它被当成开放代理随意改上游
@@ -241,8 +163,7 @@ export default {
             return text(HELP, 400);
         }
 
-        const userAgent =
-            params.get('ua') || stored?.ua || 'clash-verge/v1.7.7';
+        const userAgent = 'clash-verge/v1.7.7';
 
         let upstream;
         try {
@@ -282,21 +203,12 @@ export default {
             );
         }
 
-        if (url.searchParams.get('debug') === '1') {
-            return text(
-                `解析成功: ${proxies.length} 个节点\n` +
-                    `跳过: ${skipped.length}\n\n` +
-                    skipped.map((item) => `- ${item}`).join('\n'),
-            );
-        }
-
         const yaml = toYaml(buildConfig(proxies));
         return new Response(yaml, {
             headers: {
                 ...YAML_HEADERS,
                 'x-proxy-count': String(proxies.length),
                 'x-skipped-count': String(skipped.length),
-                // 响应头只放摘要，完整信息用 ?debug=1 看
                 'x-skipped-summary': encodeURIComponent(
                     skipped.slice(0, 5).join(' | '),
                 ),
