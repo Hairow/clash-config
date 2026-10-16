@@ -200,11 +200,16 @@ function parseVmess(uri) {
     const tls = String(data.tls || '').toLowerCase() === 'tls';
     const servername = data.sni || data.host;
 
+    const port = Number(data.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`端口无效: ${data.port}`);
+    }
+
     const proxy = {
         name: data.ps || name || `${data.add}:${data.port}`,
         type: 'vmess',
         server: data.add,
-        port: Number(data.port),
+        port,
         uuid: data.id,
         alterId: Number(data.aid || 0),
         cipher: data.scy || 'auto',

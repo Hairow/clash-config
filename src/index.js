@@ -80,7 +80,8 @@ async function loadUpstream(source) {
 async function saveUpstream(env, origin, target, nodeCount) {
     const hash = await upstreamHash(target);
     const existing = await env.SUB_KV.get(`u:${hash}`);
-    if (existing) {
+    // 除反查索引外还要确认真身还在：下面两次 put 只成功一次的话会留下悬空的 u:
+    if (existing && (await env.SUB_KV.get(`sub:${existing}`))) {
         return text(
             `${origin}/s?token=${existing}\n\n` +
             `上游探测可用（${nodeCount} 个节点），` +
@@ -162,6 +163,9 @@ async function handleRoot(env, url) {
 
 export default {
     async fetch(request, env) {
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+            return text('Method Not Allowed', 405, { allow: 'GET, HEAD' });
+        }
 
         if (!env.ACCESS_KEY) {
             return text('需要配置 ACCESS_KEY', 500);

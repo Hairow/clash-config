@@ -2,7 +2,7 @@
 
 把订阅地址转成 Clash Verge (mihomo) 可直接导入的完整配置。
 
-从 `backend/build-clash-config.js`（`pnpm clash:build`）抽取的最小实现：不依赖 Sub-Store 后端，单个 Cloudflare Worker 完成全部转换。
+从另一个仓库的 `backend/build-clash-config.js`（`pnpm clash:build`）抽取出来的最小实现：不依赖 Sub-Store 后端，单个 Cloudflare Worker 完成全部转换。**本仓库只有抽取出的 Worker 部分，不含该脚本、`backend/` 目录与 `pnpm clash:build`**，文末那张对比表仅作参考。
 
 ## 为什么需要
 
@@ -34,7 +34,7 @@ curl "https://<worker>.workers.dev/?url=<源订阅地址>&key=<ACCESS_KEY>"
 
 | 参数 | 说明 |
 | --- | --- |
-| `url` | 源订阅地址，**必需**（或命中短地址时由 KV 提供） |
+| `url` | 源订阅地址。根路径（`/`）下**必需**，`/s?token=` 不用它 |
 | `key` | 访问密钥，**必需**（与 `ACCESS_KEY` 一致） |
 
 > `SUB_KV` 与 `ACCESS_KEY` 都是**必填**：缺任何一个，所有请求都会返回 `500` 并说明缺了什么，不会降级成"直接出配置"。
@@ -137,7 +137,9 @@ pnpm exec wrangler tail        # 实时看
 | 没解析到节点 | `422` + 上游内容前 500 字符 |
 | 短地址失效 | `404` + 重新生成的用法 |
 | 密钥不对 | `403 forbidden` |
-| 缺 `SUB_KV` / `ACCESS_KEY` | `500` + 缺的是哪一个，以及配置命令 |
+| 缺 `SUB_KV` / `ACCESS_KEY` | `500` + 缺的是哪一个 |
+| 方法不是 `GET` / `HEAD` | `405` + `Allow: GET, HEAD` |
+| 路径不在 `/`、`/s` 里 | `404` |
 
 想确认某个订阅到底哪些节点被跳过，看响应头：`x-proxy-count` 是成功解析数，`x-skipped-count` 是跳过数，`x-skipped-summary` 是前 5 条跳过原因（URL 编码）。
 
@@ -190,6 +192,8 @@ https://<worker>.workers.dev/?url=http://<sub-store>/download/<订阅名>/URI
 
 ## 与 `pnpm clash:build` 的差异
 
+> 下表里的 `pnpm clash:build` 与 `backend/build-clash-config.js` 都在另一个仓库，本仓库不包含。
+
 | | `pnpm clash:build` | 本 Worker |
 | --- | --- | --- |
 | 运行位置 | 本地 Node | Cloudflare 边缘 |
@@ -207,5 +211,5 @@ https://<worker>.workers.dev/?url=http://<sub-store>/download/<订阅名>/URI
 src/index.js      Worker 入口：读取参数、抓取上游、返回 YAML
 src/convert.js    纯函数：URI 解析、配置拼装、YAML 序列化
 src/utils.js      纯函数：URI 拆分与解码、短 token、纯文本响应（被上面两个文件引用）
-test/             单元测试（node:test）
+test/             单元测试（node:test）：URI 解析与拼装、Worker 路由与 KV 行为
 ```

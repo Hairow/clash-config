@@ -76,17 +76,29 @@ export function parseUserHost(body) {
     return [body.slice(0, at), body.slice(at + 1)];
 }
 
-// 兼容 IPv6 字面量 [::1]:443
+// 兼容 IPv6 字面量 [::1]:443。端口必须是 1-65535 的整数，否则抛错让调用方把整条
+// 节点计入 skipped —— NaN / 0 这类值写进配置要等客户端导入时才报错，很难查
 export function splitHostPort(value) {
     const hostPort = String(value).trim();
+    let host;
+    let portText;
     if (hostPort.startsWith('[')) {
         const end = hostPort.indexOf(']');
         if (end < 0) throw new Error('IPv6 地址缺少 ]');
-        return [hostPort.slice(1, end), Number(hostPort.slice(end + 2))];
+        host = hostPort.slice(1, end);
+        portText = hostPort.slice(end + 2);
+    } else {
+        const index = hostPort.lastIndexOf(':');
+        if (index < 0) throw new Error('缺少端口');
+        host = hostPort.slice(0, index);
+        portText = hostPort.slice(index + 1);
     }
-    const index = hostPort.lastIndexOf(':');
-    if (index < 0) throw new Error('缺少端口');
-    return [hostPort.slice(0, index), Number(hostPort.slice(index + 1))];
+
+    const port = Number(portText);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`端口无效: ${hostPort}`);
+    }
+    return [host, port];
 }
 
 // 短 token 用 base64url，12 个字符，碰撞概率可以忽略
@@ -111,12 +123,13 @@ export async function upstreamHash(target) {
 }
 
 // 纯文本响应：错误提示、短地址、用法说明都走这里
-export function text(body, status) {
+export function text(body, status, headers) {
     return new Response(body, {
         status: status || 200,
         headers: {
             'content-type': 'text/plain; charset=utf-8',
             'cache-control': 'no-store',
+            ...headers,
         },
     });
 }

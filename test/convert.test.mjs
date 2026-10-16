@@ -211,3 +211,42 @@ describe('buildConfig', () => {
         assert.equal(parsed.proxies[0].name, '测试节点');
     });
 });
+
+describe('端口校验', () => {
+    const INVALID = [
+        ['非数字端口', 'vless://u@1.2.3.4:abc?security=tls#p'],
+        ['端口越界', 'vless://u@1.2.3.4:99999?security=tls#p'],
+        ['端口为 0', 'vless://u@1.2.3.4:0?security=tls#p'],
+        ['IPv6 没写端口', 'vless://u@[::1]?security=tls#p'],
+    ];
+
+    for (const [label, uri] of INVALID) {
+        it(`${label}计入 skipped，而不是产出 port 非法的节点`, () => {
+            const { proxies, skipped } = parseSubscription(uri);
+            assert.equal(proxies.length, 0);
+            assert.match(skipped[0], /端口无效/);
+        });
+    }
+
+    it('合法端口照常解析，IPv6 也支持', () => {
+        assert.equal(
+            parseSubscription('vless://u@1.2.3.4:443?security=tls#p').proxies[0]
+                .port,
+            443,
+        );
+
+        const v6 = parseSubscription('vless://u@[::1]:8443?security=tls#p')
+            .proxies[0];
+        assert.equal(v6.server, '::1');
+        assert.equal(v6.port, 8443);
+    });
+
+    it('vmess 的端口同样要校验', () => {
+        const uri = `vmess://${b64(
+            JSON.stringify({ add: '1.2.3.4', port: 'abc', id: 'x' }),
+        )}`;
+        const { proxies, skipped } = parseSubscription(uri);
+        assert.equal(proxies.length, 0);
+        assert.match(skipped[0], /端口无效/);
+    });
+});
